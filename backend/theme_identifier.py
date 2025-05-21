@@ -1,29 +1,31 @@
 import os
-from transformers import AutoModelForCausalLM, AutoTokenizer  # For the language model
-import torch  # For GPU usage
-import nltk  # For text cleaning
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
+import nltk
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
-from sklearn.feature_extraction.text import TfidfVectorizer  # For finding themes
-from sklearn.decomposition import LatentDirichletAllocation
+import re
+from nltk import pos_tag
 
+# Set environment variable to optimize CUDA memory allocation
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
+# Download required NLTK data
 nltk.download('punkt', quiet=True)
 nltk.download('punkt_tab', quiet=True)
 nltk.download('stopwords', quiet=True)
-
+nltk.download('averaged_perceptron_tagger_eng', quiet=True)
 
 class ThemeIdentifier:
-    
     def __init__(self, query_processor):
-        
+        """Initialize the ThemeIdentifier with a query processor and load the language model."""
         self.query_processor = query_processor
-        
         model_name = "microsoft/Phi-3-mini-4k-instruct"
         
+        # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         
+        # Simplified device map for CPU/GPU compatibility
         max_memory = {0: "2GiB", "cpu": "16GiB"}
         device_map = {
             "model.embed_tokens": "cuda",
@@ -53,122 +55,132 @@ class ThemeIdentifier:
         else:
             raise e
         
-            
         self.stop_words = set(stopwords.words('english'))
-        
-        
-    def clean_text(self, text):
-        
-        
-        tokens = word_tokenize(text.lower())
-        cleaned_tokens = [token for token in tokens if token.isalpha() and token not in self.stop_words]
-        return ' '.join(cleaned_tokens)
-    
-    def find_themes(self, responses):
-        
+
+    def find_themes(self, query: str, responses: list) -> list:
+        """Identify three concise themes based on the query and response texts."""
         texts = [response.get("answer", "") for response in responses]
-        print(f"Texts for theme detection: {texts}")
-        
         if not texts or all(t == "" for t in texts):
-            return []
+            return [query.lower()]
         
-        
-        
-        cleaned_texts = [self.clean_text(text) for text in texts]
-        
-        vectorizer = TfidfVectorizer(max_features=5000, stop_words='english')
-        tfidf_matrix = vectorizer.fit_transform(cleaned_texts)
-        
-        lda = LatentDirichletAllocation(n_components=2,max_iter=50,learning_decay=0.7, random_state=42)
-        lda.fit(tfidf_matrix)
-        
-        feature_names = vectorizer.get_feature_names_out()
-        
-        themes = []
-        for topic in lda.components_:
-            top_words = [feature_names[i] for i in topic.argsort()[-3:]]  # Top 3 words
-            themes.append(" ".join(top_words))
+        combined_text = " ".join(texts)
+        prompt = f"""
+Based on the query '{query}' and the text below, identify exactly 3 concise themes that capture the key concepts.
+The first theme must be the main topic (e.g., '{query.lower()}').
+The other two themes must be distinct, directly relevant to the text, non-repetitive, and use precise terms from the text.
+Avoid vague words like 'figure' or 'workings'.
+Return only the themes, separated by newlines.
+
+Text: {combined_text}
+
+Themes:
+"""
+        try:
+            inputs = self.tokenizer(prompt, return_tensors="pt")
+            outputs = self.model.generate(**inputs, max_new_tokens=100)
+            themes_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
             
-        print(f"Found themes: {themes}")
-        return themes
-    
-    
+            # Extract themes after "Themes:" marker
+            if "Themes:" in themes_text:
+                themes_text = themes_text.split("Themes:")[1].strip()
+            else:
+                themes_text = themes_text.strip()
+            
+            # Split themes by newline and clean up
+            themes = [re.sub(r'^\d+\.\s*', '', theme).strip() for theme in themes_text.split('\n') if theme.strip()]
+            
+            # Ensure exactly three themes
+            if len(themes) >= 3:
+                return themes[:3]
+            elif len(themes) > 0:
+                return themes + [query.lower()] * (3 - len(themes))
+            
+            # Fallback to noun extraction if model fails
+            tokens = word_tokenize(combined_text.lower())
+            tagged = pos_tag(tokens)
+            nouns = [word for word, pos in tagged if pos.startswith('NN') and word not in self.stop_words][:2]
+            return [query.lower()] + nouns[:2] if nouns else [query.lower()] * 3
+        
+        except Exception as e:
+            # Log error silently for debugging
+            with open("theme_identifier_errors.log", "a") as f:
+                f.write(f"Error generating themes: {e}\n")
+            tokens = word_tokenize(combined_text.lower())
+            tagged = pos_tag(tokens)
+            nouns = [word for word, pos in tagged if pos.startswith('NN') and word not in self.stop_words][:2]
+            return [query.lower()] + nouns[:2] if nouns else [query.lower()] * 3
+
     def summarize_responses(self, query: str, responses: list) -> dict:
-        
-        print(f"processing responses: {responses}")
-      
-        themes = self.find_themes(responses)
-        
+        """Summarize responses and return structured output with themes and citations."""
+        responses = self.query_processor.process_query(query)
+        themes = self.find_themes(query, responses)
         
         if not responses:
-            return {"summary": "No answers found.", "themes": [], "citations": []}
-        
+            return {"summary": "No answers found.", "themes": [], "citations": [], "individual_responses": []}
         
         answer_texts = [response.get("answer", "") for response in responses]
         citations = [response.get("citation", "Unknown") for response in responses]
-        
+        doc_ids = [response.get("doc_id", "Unknown") for response in responses]
         combined_text = " ".join(answer_texts)
         
-        themes_str = ", ".join(themes) if themes else "none"
-        citations_str = ", ".join(citations) if citations else "none"
-        
         prompt = f"""
-Your task is to:
-- Summarize the provided answers in exactly one or two sentences, addressing the query '{query}'.
-- Use a single period (.) to separate sentences in the summary if two are used.
-- Do not add any extra text, explanations, commentary, or line breaks beyond the required summary.
-- If no answers are provided, output only: No answers found.
-- Replace [query] with the actual query provided.
-
-Example:
-Query: "What is machine learning?"
-Answers: ["Machine learning uses algorithms to predict outcomes (Book A, p.10).", "It involves training models on data (Book B, p.25)."]
-
-Output:
-Machine learning uses algorithms to predict outcomes. It involves training models on data.
+Summarize the answers in 3 to 5 concise sentences for '{query}'.
+Use a single period (.) between sentences.
+Do not add extra text, explanations, or line breaks.
+If no answers, output: No answers found.
 
 Answers: {combined_text}
 
 Summary:
 """
-        
-        
         try:
             inputs = self.tokenizer(prompt, return_tensors="pt")
-            outputs = self.model.generate(**inputs, max_new_tokens=100)
+            outputs = self.model.generate(**inputs, max_new_tokens=300)
             summary = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            
             if "Summary:" in summary:
                 summary = summary.split("Summary:")[1].strip()
-                
+            summary = re.split(r'\n\s*\n|What is|Summarize the answers', summary)[0].strip()
             sentences = [s.strip() for s in summary.split('.') if s.strip()]
-            summary = '. '.join(sentences[:2]) + '.' if sentences else "Could not summarize answers."
-           
-            if themes:
-                summary += f" Themes: {themes_str}."
-            if citations:
-                summary += f" Citations: {citations_str}."
-                
+            summary = '. '.join(sentences[:5]) + '.' if sentences else "Could not summarize answers."
         except Exception as e:
-            print(f"Error summarizing: {e}")
+            with open("theme_identifier_errors.log", "a") as f:
+                f.write(f"Error summarizing: {e}\n")
             summary = "Error summarizing answers."
-            
-            if themes:
-                summary += f" Themes: {themes_str}."
-            if citations:
-                summary += f" Citations: {citations_str}."   
-
+        
+        # Format the final summary
+        final_summary = "Synthesized Answer:\n"
+        final_summary += f"Summary: {summary}\n\n"
+        final_summary += f"The query '{query}' is addressed through the following themes:\n"
+        for i, theme in enumerate(themes, start=1):
+            final_summary += f"- **Theme {i}: {theme}**\n"
+        
+        individual_responses = [
+            {"Document ID": doc_id, "Extracted Answer": answer, "Citation": citation}
+            for doc_id, answer, citation in zip(doc_ids, answer_texts, citations)
+        ]
+        
         return {
-            "summary": summary,
+            "summary": final_summary,
             "themes": themes,
-            "citations": citations
+            "citations": citations,
+            "individual_responses": individual_responses
         }
+
+    def print_tabular_responses(self, responses):
+        """Print individual responses in a clean tabular format."""
+        print("\nIndividual Responses:")
+        print("| Document ID                  | Extracted Answer                                      | Citation |")
+        print("|-----------------------------|------------------------------------------------------|----------|")
         
-        
-        
-    def identify_themes(self, query):
+        for resp in responses:
+            doc_id = resp["Document ID"]
+            # Truncate answer to 50 chars for display, but preserve full answer in data
+            answer = resp["Extracted Answer"][:50] + "..." if len(resp["Extracted Answer"]) > 50 else resp["Extracted Answer"]
+            citation = resp["Citation"]
+            print(f"| {doc_id:<27} | {answer:<52} | {citation:<8} |")
+
+    def identify_themes(self, query: str) -> dict:
+        """Process a query and return summarized results with themes."""
         responses = self.query_processor.process_query(query)
-        print(f"Number of responses for '{query}': {len(responses)}")
         result = self.summarize_responses(query, responses)
-        print(f"Final result: {result}")
         return result
