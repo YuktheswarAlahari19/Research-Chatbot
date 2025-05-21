@@ -46,19 +46,28 @@ class ThemeIdentifier:
         except RuntimeError as e:
             if "out of memory" in str(e):
                 print("Falling back to CPU")
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                torch_dtype=torch.float16,
-                device_map="cpu",
-                load_in_4bit=False
-        )
-        else:
-            raise e
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    torch_dtype=torch.float16,
+                    device_map="cpu",
+                    load_in_4bit=False
+                )
+            else:
+                raise e
         
         self.stop_words = set(stopwords.words('english'))
 
     def find_themes(self, query: str, responses: list) -> list:
-        """Identify three concise themes based on the query and response texts."""
+        """Identify themes from responses based on the query."""
+        # Ensure query is a string before calling lower()
+        if isinstance(query, list):
+            if query and isinstance(query[0], str):
+                query = query[0]  # Extract the first string if the list contains one
+            else:
+                query = "default query"  # Fallback if the list is empty or doesn't contain a string
+        elif not isinstance(query, str):
+            query = str(query)  # Convert non-string, non-list inputs to string
+
         texts = [response.get("answer", "") for response in responses]
         if not texts or all(t == "" for t in texts):
             return [query.lower()]
@@ -80,29 +89,24 @@ Themes:
             outputs = self.model.generate(**inputs, max_new_tokens=100)
             themes_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
             
-            # Extract themes after "Themes:" marker
             if "Themes:" in themes_text:
                 themes_text = themes_text.split("Themes:")[1].strip()
             else:
                 themes_text = themes_text.strip()
             
-            # Split themes by newline and clean up
             themes = [re.sub(r'^\d+\.\s*', '', theme).strip() for theme in themes_text.split('\n') if theme.strip()]
             
-            # Ensure exactly three themes
             if len(themes) >= 3:
                 return themes[:3]
             elif len(themes) > 0:
                 return themes + [query.lower()] * (3 - len(themes))
             
-            # Fallback to noun extraction if model fails
             tokens = word_tokenize(combined_text.lower())
             tagged = pos_tag(tokens)
             nouns = [word for word, pos in tagged if pos.startswith('NN') and word not in self.stop_words][:2]
             return [query.lower()] + nouns[:2] if nouns else [query.lower()] * 3
         
         except Exception as e:
-            # Log error silently for debugging
             with open("theme_identifier_errors.log", "a") as f:
                 f.write(f"Error generating themes: {e}\n")
             tokens = word_tokenize(combined_text.lower())
@@ -174,7 +178,6 @@ Summary:
         
         for resp in responses:
             doc_id = resp["Document ID"]
-            # Truncate answer to 50 chars for display, but preserve full answer in data
             answer = resp["Extracted Answer"][:50] + "..." if len(resp["Extracted Answer"]) > 50 else resp["Extracted Answer"]
             citation = resp["Citation"]
             print(f"| {doc_id:<27} | {answer:<52} | {citation:<8} |")

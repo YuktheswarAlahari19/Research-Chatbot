@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chatbot Theme Identifier</title>
+    <link rel="icon" href="/static/favicon.ico">
+    <style>
+        body {
+            background-color: #000000;
+            color: #ffffff;
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1, h2, h3 {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        h2 {
+            font-size: 1.5em;
+        }
+        h3 {
+            font-size: 1.2em;
+            margin-top: 20px;
+        }
+        p {
+            margin-bottom: 15px;
+            line-height: 1.6;
+        }
+        ul {
+            list-style-type: disc;
+            margin-left: 20px;
+            padding-left: 0;
+        }
+        li {
+            margin-bottom: 10px;
+        }
+        .upload-section, .query-section {
+            margin-bottom: 30px;
+            padding: 15px;
+        }
+        .upload-section label, .query-section label {
+            display: block;
+            margin-bottom: 10px;
+            font-weight: bold;
+        }
+        .upload-section input[type="file"], .query-section input[type="text"] {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 10px;
+            border: 1px solid #444;
+            border-radius: 5px;
+            background-color: #333;
+            color: #ffffff;
+        }
+        .upload-section button, .query-section button {
+            background-color: #666;
+            color: #fff;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .query-section {
+            display: none;
+        }
+        .progress {
+            display: none;
+            margin-top: 10px;
+            text-align: center;
+        }
+        .progress-bar-container {
+            width: 100%;
+            background-color: #333;
+            border-radius: 5px;
+            height: 25px;
+            position: relative;
+            overflow: hidden;
+        }
+        .progress-bar {
+            width: 0%;
+            height: 100%;
+            background: linear-gradient(90deg, #3498db, #1abc9c);
+            transition: width 0.5s ease-in-out;
+        }
+        .progress-text {
+            margin-top: 10px;
+            font-style: italic;
+            color: #a0a0a0;
+        }
+        .results {
+            display: none;
+            margin-top: 20px;
+            padding: 20px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            border: 1px solid #444;
+        }
+        th, td {
+            padding: 12px 15px;
+            text-align: left;
+            border: 1px solid #444;
+        }
+        th {
+            background-color: #333;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Chatbot Theme Identifier</h1>
+        <div class="upload-section" id="uploadSection">
+            <form id="uploadForm" enctype="multipart/form-data">
+                <label for="files">Upload PDF Files:</label>
+                <input type="file" id="files" name="files" multiple accept=".pdf" required>
+                <button type="submit">Upload</button>
+            </form>
+        </div>
+        <div class="query-section" id="querySection">
+            <form id="queryForm">
+                <label for="query">Enter your query:</label>
+                <input type="text" id="query" name="query" required>
+                <button type="submit">Submit Query</button>
+            </form>
+        </div>
+        <div class="progress" id="progress">
+            <div class="progress-bar-container">
+                <div class="progress-bar" id="progressBar"></div>
+            </div>
+            <div class="progress-text" id="progressText">Processing...</div>
+        </div>
+        <div class="results" id="results">
+            <h2>Results</h2>
+            <div class="summary" id="summaryOutput"></div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Document ID</th>
+                        <th>Extracted Answer</th>
+                        <th>Citation</th>
+                    </tr>
+                </thead>
+                <tbody id="tableBody"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        let currentTaskId = null;
+        const uploadForm = document.getElementById('uploadForm');
+        const queryForm = document.getElementById('queryForm');
+        const uploadSection = document.getElementById('uploadSection');
+        const querySection = document.getElementById('querySection');
+        const progress = document.getElementById('progress');
+        const progressBar = document.getElementById('progressBar');
+        const progressText = document.getElementById('progressText');
+        const results = document.getElementById('results');
+        const summaryOutput = document.getElementById('summaryOutput');
+        const tableBody = document.getElementById('tableBody');
+
+        function startLoading(operation) {
+            progress.style.display = 'block';
+            progressBar.style.width = '0%';
+            progressText.textContent = operation === 'upload' ? 'Uploading files...' : 'Processing query...';
+        }
+
+        function stopLoading() {
+            progress.style.display = 'none';
+        }
+
+        uploadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            startLoading('upload');
+            const formData = new FormData(uploadForm);
+
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                if (!data.task_id) {
+                    throw new Error('No task_id received from server');
+                }
+                currentTaskId = data.task_id;
+
+                const pollProgress = async () => {
+                    const progressResponse = await fetch(`/progress/${currentTaskId}`);
+                    const progressData = await progressResponse.json();
+
+                    progressText.textContent = progressData.status || 'Processing...';
+                    progressBar.style.width = `${progressData.progress}%`;
+
+                    if (progressData.progress === 100 || progressData.progress === -1) {
+                        stopLoading();
+                        uploadSection.style.display = 'none';
+                        querySection.style.display = 'block';
+                        if (progressData.progress === -1) {
+                            results.style.display = 'block';
+                            summaryOutput.innerHTML = `<p style="color: red;">Error: ${progressData.status}</p>`;
+                        }
+                    } else {
+                        setTimeout(pollProgress, 1000);
+                    }
+                };
+                pollProgress();
+            } catch (error) {
+                console.error('Upload or polling error:', error);
+                stopLoading();
+                uploadSection.style.display = 'none';
+                querySection.style.display = 'block';
+            }
+        });
+
+        queryForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            startLoading('query');
+            const query = document.getElementById('query').value;
+
+            try {
+                const response = await fetch('/process_query', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ task_id: currentTaskId, query })
+                });
+                const data = await response.json();
+                if (!data.task_id) {
+                    throw new Error('No task_id in query response');
+                }
+                currentTaskId = data.task_id;
+
+                const pollProgress = async () => {
+                    const progressResponse = await fetch(`/progress/${currentTaskId}`);
+                    const progressData = await progressResponse.json();
+
+                    progressText.textContent = progressData.status || 'Processing query...';
+                    progressBar.style.width = `${progressData.progress}%`;
+
+                    if (progressData.progress === 100) {
+                        stopLoading();
+                        const resultResponse = await fetch(`/results/${currentTaskId}`);
+                        const resultData = await resultResponse.json();
+                        summaryOutput.innerHTML = formatSynthesizedAnswer(resultData.summary || 'No summary available');
+                        tableBody.innerHTML = '';
+                        if (resultData.individual_responses) {
+                            resultData.individual_responses.forEach(row => {
+                                const tr = document.createElement('tr');
+                                tr.innerHTML = `
+                                    <td>${row['Document ID'] || ''}</td>
+                                    <td>${row['Extracted Answer'] || ''}</td>
+                                    <td>${row['Citation'] || ''}</td>
+                                `;
+                                tableBody.appendChild(tr);
+                            });
+                        }
+                        results.style.display = 'block';
+                    } else if (progressData.progress === -1) {
+                        stopLoading();
+                        results.style.display = 'block';
+                        summaryOutput.innerHTML = `<p style="color: red;">${progressData.status}</p>`;
+                    } else {
+                        setTimeout(pollProgress, 1000);
+                    }
+                };
+                pollProgress();
+            } catch (error) {
+                console.error('Query error:', error);
+                stopLoading();
+            }
+        });
+
+        function formatSynthesizedAnswer(answer) {
+            const parts = answer.split('Summary:');
+            if (parts.length < 2) return `<p>${answer}</p>`;
+
+            const title = parts[0].trim();
+            const summaryAndThemes = parts[1].split('The query');
+            const summary = summaryAndThemes[0].trim();
+            const themesPart = summaryAndThemes[1].split('is addressed through the following themes:')[1];
+            const themes = themesPart.split('- **Theme').slice(1).map(theme => theme.trim().replace('**', ''));
+
+            let html = `<h2>${title}</h2>`;
+            html += `<h3>Summary</h3><p>${summary}</p>`;
+            html += `<h3>Themes</h3><ul>`;
+            themes.forEach(theme => {
+                html += `<li>${theme}</li>`;
+            });
+            html += `</ul>`;
+
+            return html;
+        }
+    </script>
+</body>
+</html>
