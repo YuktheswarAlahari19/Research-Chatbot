@@ -26,5 +26,3 @@
 3. Text is converted into embeddings and stored in ChromaDB via the VectorStore.  
 4. Users submit queries, which the QueryProcessor answers using the Phi-3-mini model.  
 5. The ThemeIdentifier analyzes responses to highlight recurring themes and insights.  
-
-This project showcases a seamless workflow from document ingestion to actionable insights, making it a valuable tool for managing complex information.
