@@ -2,7 +2,7 @@
 
 **Research Chatbot** is a powerful system designed to process documents, enable semantic search, answer user queries, and identify key themes in responses. By integrating technologies like OCR, vector databases, and advanced language models, it provides an efficient solution for analyzing and understanding large document collections.
 
-**Note**: Use Python 3.10. The "Test" folder contains scripts to test each backend module.
+**Note**: Use Python 3.10. The files which have the names "test.py" contains scripts to test each backend module.
 
 ## System Components
 
